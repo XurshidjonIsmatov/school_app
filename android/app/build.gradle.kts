@@ -1,7 +1,6 @@
 plugins {
     id("com.android.application")
-    id("kotlin-android")
-    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
+    // Eski id("kotlin-android") o'rniga Flutter o'zi ichki tizimda Kotlinni boshqaradi
     id("dev.flutter.flutter-gradle-plugin")
 }
 
@@ -45,7 +44,7 @@ flutter {
     source = "../.."
 }
 
-// BU YERDA DESUGARING KUTUBXONASI QO'SHILDI
+// Desugaring va boshqa kerakli kutubxonalar bo'limi
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
 }
