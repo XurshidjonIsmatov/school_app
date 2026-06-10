@@ -4,6 +4,7 @@ import 'package:school_app/features/students/data/models/student_model.dart';
 import 'package:school_app/features/groups/data/models/group_model.dart';
 import 'package:school_app/features/groups/data/models/attendance_model.dart';
 import 'package:school_app/features/payments/data/models/payment_model.dart';
+import 'package:school_app/features/payments/data/models/monthly_charge_model.dart';
 import 'package:school_app/features/settings/data/models/template_model.dart';
 
 class DatabaseHelper {
@@ -24,7 +25,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 5,
+      version: 6,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -50,6 +51,75 @@ class DatabaseHelper {
         // Column might already exist if version 4 migration was successful
       }
     }
+    if (oldVersion < 6) {
+      await _migrateToV6(db);
+    }
+  }
+
+  Future<void> _migrateToV6(Database db) async {
+    await db.execute('ALTER TABLE students ADD COLUMN join_date TEXT');
+    await db.execute('ALTER TABLE students ADD COLUMN group_id INTEGER');
+    await db.execute(
+      "ALTER TABLE students ADD COLUMN payment_type TEXT DEFAULT 'monthly'",
+    );
+    await db.execute(
+      "ALTER TABLE students ADD COLUMN payment_method TEXT DEFAULT 'cash'",
+    );
+    await db.execute(
+      'ALTER TABLE students ADD COLUMN deposit_balance REAL DEFAULT 0',
+    );
+    try {
+      await db.execute('ALTER TABLE payments ADD COLUMN note TEXT');
+    } catch (_) {}
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS monthly_charges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        paid_amount REAL DEFAULT 0,
+        charge_date TEXT NOT NULL,
+        month INTEGER NOT NULL,
+        year INTEGER NOT NULL,
+        status TEXT DEFAULT 'unpaid',
+        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+        UNIQUE(student_id, month, year)
+      )
+    ''');
+
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    await db.execute(
+      "UPDATE students SET join_date = '$today' WHERE join_date IS NULL",
+    );
+    await db.execute(
+      "UPDATE students SET payment_type = 'monthly' WHERE payment_type IS NULL",
+    );
+    await db.execute(
+      "UPDATE students SET payment_method = 'cash' WHERE payment_method IS NULL",
+    );
+    await db.execute(
+      'UPDATE students SET deposit_balance = 0 WHERE deposit_balance IS NULL',
+    );
+
+    // group_id ni group_students dan birinchi guruh orqali to'ldirish
+    final students = await db.query('students', columns: ['id']);
+    for (final row in students) {
+      final studentId = row['id'] as int;
+      final groups = await db.query(
+        'group_students',
+        where: 'student_id = ?',
+        whereArgs: [studentId],
+        limit: 1,
+      );
+      if (groups.isNotEmpty) {
+        await db.update(
+          'students',
+          {'group_id': groups.first['group_id']},
+          where: 'id = ?',
+          whereArgs: [studentId],
+        );
+      }
+    }
   }
 
   Future _createDB(Database db, int version) async {
@@ -63,7 +133,12 @@ class DatabaseHelper {
         telegram_handle TEXT,
         parent_telegram TEXT,
         free_time TEXT,
-        custom_price REAL
+        custom_price REAL,
+        join_date TEXT,
+        group_id INTEGER,
+        payment_type TEXT DEFAULT 'monthly',
+        payment_method TEXT DEFAULT 'cash',
+        deposit_balance REAL DEFAULT 0
       )
     ''');
 
@@ -96,7 +171,23 @@ class DatabaseHelper {
         amount REAL,
         date TEXT,
         type TEXT,
+        note TEXT,
         FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE monthly_charges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        paid_amount REAL DEFAULT 0,
+        charge_date TEXT NOT NULL,
+        month INTEGER NOT NULL,
+        year INTEGER NOT NULL,
+        status TEXT DEFAULT 'unpaid',
+        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+        UNIQUE(student_id, month, year)
       )
     ''');
 
@@ -182,6 +273,11 @@ class DatabaseHelper {
     await db.delete('group_students', where: 'student_id = ?', whereArgs: [id]);
     await db.delete('attendance', where: 'student_id = ?', whereArgs: [id]);
     await db.delete('payments', where: 'student_id = ?', whereArgs: [id]);
+    await db.delete(
+      'monthly_charges',
+      where: 'student_id = ?',
+      whereArgs: [id],
+    );
 
     return await db.delete('students', where: 'id = ?', whereArgs: [id]);
   }
@@ -219,21 +315,18 @@ class DatabaseHelper {
     return db.delete('groups', where: 'id = ?', whereArgs: [id]);
   }
 
-  /// Oylik o'quvchilar oqimi (har oyda birinchi to'lov qilgan o'quvchilar soni)
+  /// Oylik o'quvchilar oqimi (join_date bo'yicha)
   Future<List<Map<String, dynamic>>> getMonthlyStudentFlow() async {
     final db = await instance.database;
     final year = DateTime.now().year.toString();
     final result = await db.rawQuery(
       '''
-      SELECT CAST(strftime('%m', min_date) AS INTEGER) as month,
+      SELECT CAST(strftime('%m', join_date) AS INTEGER) as month,
              COUNT(*) as count
-      FROM (
-        SELECT student_id, MIN(date) as min_date
-        FROM payments
-        GROUP BY student_id
-      ) first_payments
-      WHERE strftime('%Y', min_date) = ?
-      GROUP BY strftime('%m', min_date)
+      FROM students
+      WHERE join_date IS NOT NULL
+        AND strftime('%Y', join_date) = ?
+      GROUP BY strftime('%m', join_date)
       ORDER BY month
     ''',
       [year],
@@ -342,6 +435,123 @@ class DatabaseHelper {
     return result.map((json) => Payment.fromMap(json)).toList();
   }
 
+  Future<Payment?> getLastPayment(int studentId) async {
+    final db = await instance.database;
+    final result = await db.query(
+      'payments',
+      where: 'student_id = ?',
+      whereArgs: [studentId],
+      orderBy: 'date DESC',
+      limit: 1,
+    );
+    if (result.isEmpty) return null;
+    return Payment.fromMap(result.first);
+  }
+
+  Future<Student?> getStudentById(int id) async {
+    final db = await instance.database;
+    final result = await db.query('students', where: 'id = ?', whereArgs: [id]);
+    if (result.isEmpty) return null;
+    return Student.fromMap(result.first);
+  }
+
+  Future<List<Student>> getMonthlyPaymentStudents() async {
+    final db = await instance.database;
+    final result = await db.query(
+      'students',
+      where: "payment_type = 'monthly'",
+    );
+    return result.map((json) => Student.fromMap(json)).toList();
+  }
+
+  Future<void> updateStudentDeposit(int studentId, double balance) async {
+    final db = await instance.database;
+    await db.update(
+      'students',
+      {'deposit_balance': balance},
+      where: 'id = ?',
+      whereArgs: [studentId],
+    );
+  }
+
+  Future<double?> getGroupMonthlyFee(int groupId) async {
+    final db = await instance.database;
+    final result = await db.query(
+      'groups',
+      columns: ['price'],
+      where: 'id = ?',
+      whereArgs: [groupId],
+    );
+    if (result.isEmpty) return null;
+    return (result.first['price'] as num?)?.toDouble();
+  }
+
+  // MonthlyCharge CRUD
+  Future<int> createMonthlyCharge(MonthlyChargeModel charge) async {
+    final db = await instance.database;
+    return await db.insert('monthly_charges', charge.toMap());
+  }
+
+  Future<void> updateMonthlyCharge(MonthlyChargeModel charge) async {
+    final db = await instance.database;
+    await db.update(
+      'monthly_charges',
+      charge.toMap(),
+      where: 'id = ?',
+      whereArgs: [charge.id],
+    );
+  }
+
+  Future<List<MonthlyChargeModel>> getChargesByStudent(int studentId) async {
+    final db = await instance.database;
+    final result = await db.query(
+      'monthly_charges',
+      where: 'student_id = ?',
+      whereArgs: [studentId],
+      orderBy: 'year DESC, month DESC',
+    );
+    return result.map((json) => MonthlyChargeModel.fromMap(json)).toList();
+  }
+
+  Future<MonthlyChargeModel?> getChargeForPeriod(
+    int studentId,
+    int month,
+    int year,
+  ) async {
+    final db = await instance.database;
+    final result = await db.query(
+      'monthly_charges',
+      where: 'student_id = ? AND month = ? AND year = ?',
+      whereArgs: [studentId, month, year],
+    );
+    if (result.isEmpty) return null;
+    return MonthlyChargeModel.fromMap(result.first);
+  }
+
+  Future<List<MonthlyChargeModel>> getUnpaidCharges(int studentId) async {
+    final db = await instance.database;
+    final result = await db.query(
+      'monthly_charges',
+      where: "student_id = ? AND status != 'paid'",
+      whereArgs: [studentId],
+      orderBy: 'year ASC, month ASC',
+    );
+    return result.map((json) => MonthlyChargeModel.fromMap(json)).toList();
+  }
+
+  Future<List<MonthlyChargeModel>> getAllChargesForMonth(
+    int month,
+    int year,
+  ) async {
+    final db = await instance.database;
+    final result = await db.query(
+      'monthly_charges',
+      where: 'month = ? AND year = ?',
+      whereArgs: [month, year],
+    );
+    return result.map((json) => MonthlyChargeModel.fromMap(json)).toList();
+  }
+
   Future<List<Map<String, dynamic>>> getMonthlyPaymentsReport(
     String monthYear,
   ) async {
@@ -357,14 +567,15 @@ class DatabaseHelper {
     );
   }
 
-  /// Qarzdorlarni hisoblash uchun SQL mantiqi
+  /// Qarzdorlar — monthly_charges asosida
   Future<List<Map<String, dynamic>>> getDebtorsReport(
     String currentMonth,
   ) async {
     final db = await instance.database;
-    // Bu so'rov har bir o'quvchi uchun:
-    // 1. U a'zo bo'lgan guruhlar narxi yig'indisini (total_required)
-    // 2. Shu oyda amalga oshirgan to'lovlari yig'indisini (total_paid) hisoblaydi
+    final parts = currentMonth.split('-');
+    final year = int.parse(parts[0]);
+    final month = int.parse(parts[1]);
+
     return await db.rawQuery(
       '''
       SELECT 
@@ -372,44 +583,133 @@ class DatabaseHelper {
         s.name, 
         s.phone,
         s.parent_phone,
-        CASE 
-          WHEN s.custom_price IS NOT NULL AND s.custom_price > 0 THEN s.custom_price
-          ELSE (SELECT SUM(g.price) FROM groups g 
-                INNER JOIN group_students gs ON g.id = gs.group_id 
-                WHERE gs.student_id = s.id)
-        END as total_required,
-        (SELECT SUM(p.amount) FROM payments p 
-         WHERE p.student_id = s.id AND p.date LIKE ?) as total_paid
+        s.deposit_balance,
+        mc.amount as total_required,
+        mc.paid_amount as total_paid,
+        (mc.amount - mc.paid_amount) as debt
       FROM students s
-      GROUP BY s.id
-      HAVING (total_required > 0) AND (total_paid < total_required OR total_paid IS NULL)
+      INNER JOIN monthly_charges mc ON mc.student_id = s.id
+      WHERE mc.month = ? AND mc.year = ?
+        AND mc.status != 'paid'
+        AND (mc.amount - mc.paid_amount) > 0
+      ORDER BY debt DESC
     ''',
-      ['$currentMonth%'],
+      [month, year],
     );
   }
 
-  /// Barcha o'quvchilar va ularning joriy oydagi to'lov statusini olish
+  /// Barcha o'quvchilar moliyaviy holati (charges asosida)
   Future<List<Map<String, dynamic>>> getStudentsFinanceStatus(
     String currentMonth,
   ) async {
     final db = await instance.database;
+    final parts = currentMonth.split('-');
+    final year = int.parse(parts[0]);
+    final month = int.parse(parts[1]);
+
     return await db.rawQuery(
       '''
       SELECT 
         s.*,
-        CASE 
-          WHEN s.custom_price IS NOT NULL AND s.custom_price > 0 THEN s.custom_price
-          ELSE (SELECT SUM(g.price) FROM groups g 
-                INNER JOIN group_students gs ON g.id = gs.group_id 
-                WHERE gs.student_id = s.id)
-        END as total_required,
-        (SELECT SUM(p.amount) FROM payments p 
-         WHERE p.student_id = s.id AND p.date LIKE ?) as total_paid
+        g.name as group_name,
+        g.price as group_monthly_fee,
+        mc.amount as total_required,
+        mc.paid_amount as total_paid,
+        (mc.amount - mc.paid_amount) as current_due,
+        mc.status as charge_status,
+        (SELECT SUM(mc2.amount - mc2.paid_amount) 
+         FROM monthly_charges mc2 
+         WHERE mc2.student_id = s.id AND mc2.status != 'paid') as total_debt,
+        (SELECT MAX(p.date) FROM payments p WHERE p.student_id = s.id) as last_payment_date
       FROM students s
+      LEFT JOIN groups g ON g.id = s.group_id
+      LEFT JOIN monthly_charges mc 
+        ON mc.student_id = s.id AND mc.month = ? AND mc.year = ?
       GROUP BY s.id
     ''',
-      ['$currentMonth%'],
+      [month, year],
     );
+  }
+
+  Future<Map<String, dynamic>> getDashboardPaymentStats(
+    int month,
+    int year,
+  ) async {
+    final db = await instance.database;
+    final monthYear = '$year-${month.toString().padLeft(2, '0')}';
+
+    final totalStudents = Sqflite.firstIntValue(
+          await db.rawQuery('SELECT COUNT(*) FROM students'),
+        ) ??
+        0;
+
+    final paidStudents = Sqflite.firstIntValue(
+          await db.rawQuery(
+            '''
+        SELECT COUNT(DISTINCT student_id) FROM monthly_charges
+        WHERE month = ? AND year = ? AND status = 'paid'
+      ''',
+            [month, year],
+          ),
+        ) ??
+        0;
+
+    final debtorStudents = Sqflite.firstIntValue(
+          await db.rawQuery(
+            '''
+        SELECT COUNT(DISTINCT student_id) FROM monthly_charges
+        WHERE month = ? AND year = ? AND status != 'paid'
+          AND (amount - paid_amount) > 0
+      ''',
+            [month, year],
+          ),
+        ) ??
+        0;
+
+    final expectedResult = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(amount - paid_amount), 0) as total
+      FROM monthly_charges
+      WHERE month = ? AND year = ? AND status != 'paid'
+    ''',
+      [month, year],
+    );
+    final expectedRevenue =
+        (expectedResult.first['total'] as num?)?.toDouble() ?? 0;
+
+    final cashResult = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(amount), 0) as total FROM payments
+      WHERE date LIKE ? AND type = 'naqd'
+    ''',
+      ['$monthYear%'],
+    );
+    final cashRevenue = (cashResult.first['total'] as num?)?.toDouble() ?? 0;
+
+    final cardResult = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(amount), 0) as total FROM payments
+      WHERE date LIKE ? AND type = 'karta'
+    ''',
+      ['$monthYear%'],
+    );
+    final cardRevenue = (cardResult.first['total'] as num?)?.toDouble() ?? 0;
+
+    final depositResult = await db.rawQuery(
+      'SELECT COALESCE(SUM(deposit_balance), 0) as total FROM students',
+    );
+    final totalDeposits =
+        (depositResult.first['total'] as num?)?.toDouble() ?? 0;
+
+    return {
+      'total_students': totalStudents,
+      'paid_students': paidStudents,
+      'debtor_students': debtorStudents,
+      'expected_revenue': expectedRevenue,
+      'cash_revenue': cashRevenue,
+      'card_revenue': cardRevenue,
+      'total_deposits': totalDeposits,
+    };
   }
 
   // Template CRUD
@@ -527,6 +827,7 @@ class DatabaseHelper {
       'groups',
       'group_students',
       'payments',
+      'monthly_charges',
       'attendance',
       'templates',
       'pending_messages',
@@ -574,6 +875,7 @@ class DatabaseHelper {
       'groups',
       'group_students',
       'payments',
+      'monthly_charges',
       'attendance',
       'templates',
       'pending_messages',

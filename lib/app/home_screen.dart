@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:school_app/core/providers/student_provider.dart';
 import 'package:school_app/features/settings/presentation/screens/settings_screen.dart';
 import 'package:school_app/app/dashboard_screen.dart';
 import 'package:school_app/features/groups/presentation/screens/group_list_screen.dart';
@@ -69,8 +71,25 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // List<Widget>? _buildActions() {
+  //   // Har bir tab uchun alohida amallar (masalan, sorting yoki filtr)
+  //   if (_currentIndex == 0) {
+  //     return [
+  //       IconButton(
+  //         icon: const Icon(Icons.settings_outlined),
+  //         onPressed:
+  //             () => Navigator.push(
+  //               context,
+  //               MaterialPageRoute(builder: (_) => const SettingsScreen()),
+  //             ),
+  //       ),
+  //     ];
+  //   }
+  //   return null;
+  // }
+
   List<Widget>? _buildActions() {
-    // Har bir tab uchun alohida amallar (masalan, sorting yoki filtr)
+    // 1. Dashboard sahifasida faqat Sozlamalar tugmasi ko'rinadi
     if (_currentIndex == 0) {
       return [
         IconButton(
@@ -83,7 +102,192 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ];
     }
+
+    // 2. Groups (1), Students (2) va Payments (3) sahifalarida FILTR tugmasi ko'rinadi
+    if (_currentIndex == 1 || _currentIndex == 2 || _currentIndex == 3) {
+      return [
+        IconButton(
+          icon: const Icon(Icons.filter_list), // Filtr belgisi
+          tooltip: 'Filtrlash',
+          onPressed: () {
+            _handleFilterPressed();
+          },
+        ),
+      ];
+    }
+
+    // 3. Reports (4) sahifasida hech qanday tugma ko'rinmaydi
     return null;
+  }
+
+  // Filtr tugmasi bosilganda ishlaydigan yangi funksiya
+  // void _handleFilterPressed() {
+  //   switch (_currentIndex) {
+  //     case 1: // Groups filtratsiyasi
+  //       print('Guruhlarni filtrlash bosildi');
+  //       // Bu yerda guruhlarni holati yoki vaqtiga ko'ra filtrlaydigan dialog ochishingiz mumkin
+  //       break;
+  //     case 2: // Students filtratsiyasi
+  //       print('O\'quvchilarni filtrlash bosildi');
+  //       // Bu yerda o'quvchilarni qarzdorligi yoki guruhi bo'yicha filtrlaydigan dialog ochishingiz mumkin
+  //       break;
+  //     case 3: // Payments filtratsiyasi
+  //       print('To\'lovlarni filtrlash bosildi');
+  //       // Bu yerda to'lovlarni oyi yoki turi bo'yicha filtrlaydigan dialog ochishingiz mumkin
+  //       break;
+  //   }
+  // }
+
+  void _handleFilterPressed() {
+    if (_currentIndex == 2) {
+      // Faqat Students sahifasi uchun namuna
+      showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        builder: (context) {
+          return Consumer<StudentProvider>(
+            builder: (context, provider, child) {
+              return Padding(
+                padding: EdgeInsets.only(
+                  top: 24,
+                  left: 24,
+                  right: 24,
+                  bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'O\'quvchilarni filtrlash',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () => Navigator.pop(context),
+                        ),
+                      ],
+                    ),
+                    const Divider(),
+                    const SizedBox(height: 10),
+
+                    // 1. Guruhlar bo'yicha filtr
+                    const Text(
+                      'Guruh bo\'yicha',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<int>(
+                      value: provider.selectedGroupId,
+                      hint: const Text('Guruhni tanlang'),
+                      items:
+                          provider.groups.map((g) {
+                            return DropdownMenuItem<int>(
+                              value: g.id,
+                              child: Text(g.name),
+                            );
+                          }).toList(),
+                      onChanged: (val) => provider.setFilterGroup(val),
+                      decoration: const InputDecoration(
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // 2. To'lov holati bo'yicha filtr
+                    const Text(
+                      'To\'lov holati',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        ChoiceChip(
+                          label: const Text('Barchasi'),
+                          selected: provider.paymentFilter == 'all',
+                          onSelected: (_) => provider.setPaymentFilter('all'),
+                        ),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: const Text('To\'laganlar'),
+                          selected: provider.paymentFilter == 'paid',
+                          onSelected: (_) => provider.setPaymentFilter('paid'),
+                        ),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: const Text('Qarzdorlar'),
+                          selected: provider.paymentFilter == 'unpaid',
+                          onSelected:
+                              (_) => provider.setPaymentFilter('unpaid'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // 3. Telegram Bot holati bo'yicha filtr
+                    const Text(
+                      'Telegram Bot Status',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        ChoiceChip(
+                          label: const Text('Barchasi'),
+                          selected: provider.botStatusFilter == 'all',
+                          onSelected: (_) => provider.setBotStatusFilter('all'),
+                        ),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: const Text('Botdan o\'tgan'),
+                          selected: provider.botStatusFilter == 'registered',
+                          onSelected:
+                              (_) => provider.setBotStatusFilter('registered'),
+                        ),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: const Text('O\'tmagan'),
+                          selected: provider.botStatusFilter == 'unregistered',
+                          onSelected:
+                              (_) =>
+                                  provider.setBotStatusFilter('unregistered'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+
+                    // Natijani ko'rsatish tugmasi
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton(
+                        onPressed: () {
+                          provider
+                              .applyAllFilters(); // Filtrni bazaga/listga qo'llash
+                          Navigator.pop(context);
+                        },
+                        child: const Text('Filtrni qo\'llash'),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      );
+    }
   }
 
   @override

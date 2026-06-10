@@ -13,6 +13,11 @@ import 'package:school_app/features/payments/data/models/payment_model.dart';
 import 'package:school_app/features/settings/data/models/template_model.dart';
 import 'package:school_app/core/services/report_service.dart';
 import 'package:school_app/core/services/secure_storage_service.dart';
+import 'package:school_app/features/payments/data/repositories/payment_repository_impl.dart';
+import 'package:school_app/features/payments/domain/entities/dashboard_stats_entity.dart';
+import 'package:school_app/features/payments/domain/entities/student_finance_entity.dart';
+import 'package:school_app/features/payments/domain/enums/payment_method.dart';
+import 'package:school_app/features/payments/services/payment_service.dart';
 
 class StudentProvider extends ChangeNotifier {
   List<Student> _students = [];
@@ -29,7 +34,9 @@ class StudentProvider extends ChangeNotifier {
 
   String _searchQuery = '';
   int? _selectedGroupId;
-  String _sortOption = 'name'; // 'name' yoki 'time'
+  String _sortOption = 'name_asc';
+  String _paymentFilter = 'all';
+  String _botStatusFilter = 'all';
 
   String _logSearchQuery = '';
   DateTime? _logFilterDate;
@@ -38,6 +45,16 @@ class StudentProvider extends ChangeNotifier {
 
   double _monthlyCashTotal = 0;
   double _monthlyCardTotal = 0;
+  DashboardStatsEntity? _dashboardStats;
+  List<StudentFinanceEntity> _studentFinanceList = [];
+
+  late final PaymentService _paymentService = PaymentService(
+    PaymentRepositoryImpl(DatabaseHelper.instance),
+  );
+
+  DashboardStatsEntity? get dashboardStats => _dashboardStats;
+  List<StudentFinanceEntity> get studentFinanceList => _studentFinanceList;
+  PaymentService get paymentService => _paymentService;
 
   double get monthlyCashTotal => _monthlyCashTotal;
   double get monthlyCardTotal => _monthlyCardTotal;
@@ -149,20 +166,62 @@ class StudentProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  List<Student> get students {
-    List<Student> filtered = _students.where((s) {
-      return s.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-          s.phone.contains(_searchQuery);
-    }).toList();
+  int? get selectedGroupId => _selectedGroupId;
+  String get sortOption => _sortOption;
+  String get currentSort => _sortOption;
+  String get paymentFilter => _paymentFilter;
+  String get botStatusFilter => _botStatusFilter;
 
-    if (_sortOption == 'name') {
+  bool get isFilterActive =>
+      _selectedGroupId != null ||
+      _paymentFilter != 'all' ||
+      _botStatusFilter != 'all';
+
+  List<Student> get students {
+    List<Student> filtered =
+        _students.where((s) {
+          return s.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+              s.phone.contains(_searchQuery);
+        }).toList();
+
+    if (_paymentFilter != 'all') {
+      filtered =
+          filtered.where((student) {
+            final finance = _paymentStudents.firstWhere(
+              (p) => p['id'] == student.id,
+              orElse: () => {'charge_status': 'unpaid', 'current_due': 1},
+            );
+            final status = finance['charge_status']?.toString() ?? 'unpaid';
+            final due = (finance['current_due'] as num?)?.toDouble() ?? 0;
+            final isPaid = status == 'paid' || due <= 0;
+            return _paymentFilter == 'paid' ? isPaid : !isPaid;
+          }).toList();
+    }
+
+    if (_botStatusFilter != 'all') {
+      filtered =
+          filtered.where((student) {
+            final hasBot =
+                student.telegramHandle != null &&
+                student.telegramHandle!.isNotEmpty;
+            return _botStatusFilter == 'registered' ? hasBot : !hasBot;
+          }).toList();
+    }
+
+    if (_sortOption == 'name_asc' || _sortOption == 'name') {
       filtered.sort(
         (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
       );
-    } else {
-      // ID bo'yicha teskari sortlash (yangi qo'shilganlar birinchi)
+    } else if (_sortOption == 'name_desc') {
+      filtered.sort(
+        (a, b) => b.name.toLowerCase().compareTo(a.name.toLowerCase()),
+      );
+    } else if (_sortOption == 'date_desc' || _sortOption == 'time') {
       filtered.sort((a, b) => (b.id ?? 0).compareTo(a.id ?? 0));
+    } else if (_sortOption == 'date_asc') {
+      filtered.sort((a, b) => (a.id ?? 0).compareTo(b.id ?? 0));
     }
+
     return filtered;
   }
 
@@ -196,6 +255,8 @@ class StudentProvider extends ChangeNotifier {
     _isLoading = true;
     notifyListeners();
 
+    await _paymentService.generateMonthlyCharges();
+
     if (_selectedGroupId == null) {
       _students = await DatabaseHelper.instance.readAllStudents();
     } else {
@@ -218,30 +279,18 @@ class StudentProvider extends ChangeNotifier {
     _paymentStudents = await DatabaseHelper.instance.getStudentsFinanceStatus(
       currentMonth,
     );
+    _studentFinanceList = await _paymentService.getAllStudentFinance();
     await fetchPendingMessagesCount();
-
     _isLoading = false;
     notifyListeners();
   }
 
   /// Joriy oy uchun moliyaviy ma'lumotlarni yuklash
   Future<void> fetchMonthlyFinance() async {
-    final currentMonth = DateTime.now().toString().substring(0, 7);
-    final reportData = await DatabaseHelper.instance.getMonthlyPaymentsReport(
-      currentMonth,
-    );
-
-    _monthlyCashTotal = 0;
-    _monthlyCardTotal = 0;
-
-    for (var item in reportData) {
-      if (item['type'] == 'naqd') {
-        _monthlyCashTotal = (item['total'] as num).toDouble();
-      }
-      if (item['type'] == 'karta') {
-        _monthlyCardTotal = (item['total'] as num).toDouble();
-      }
-    }
+    final now = DateTime.now();
+    _dashboardStats = await _paymentService.getDashboardStats();
+    _monthlyCashTotal = _dashboardStats!.cashRevenue;
+    _monthlyCardTotal = _dashboardStats!.cardRevenue;
     notifyListeners();
   }
 
@@ -271,8 +320,27 @@ class StudentProvider extends ChangeNotifier {
     fetchStudents();
   }
 
-  int? get selectedGroupId => _selectedGroupId;
-  String get sortOption => _sortOption;
+  void setPaymentFilter(String value) {
+    _paymentFilter = value;
+    notifyListeners();
+  }
+
+  void setBotStatusFilter(String value) {
+    _botStatusFilter = value;
+    notifyListeners();
+  }
+
+  void clearAllFilters() {
+    _selectedGroupId = null;
+    _paymentFilter = 'all';
+    _botStatusFilter = 'all';
+    _searchQuery = '';
+    fetchStudents();
+  }
+
+  void applyAllFilters() {
+    notifyListeners();
+  }
 
   /// Yangi o'quvchi qo'shish va Telegram xabarnoma yuborish
   Future<void> addStudent(
@@ -284,23 +352,35 @@ class StudentProvider extends ChangeNotifier {
     final id = await DatabaseHelper.instance.createStudent(student);
 
     if (id > 0) {
-      final studentWithId = student.copyWith(id: id);
+      var studentWithId = student.copyWith(
+        id: id,
+        joinDate:
+            student.joinDate ??
+            DateTime.now().toIso8601String().substring(0, 10),
+      );
 
-      // 2. Avtomatik guruhga biriktirish mantiqi
-      // Agar o'quvchining bo'sh vaqti ko'rsatilgan bo'lsa, mos keladigan guruhni qidiramiz
-      if (student.freeTime != null && student.freeTime!.isNotEmpty) {
+      if (student.groupId != null) {
+        await DatabaseHelper.instance.addStudentToGroup(
+          student.groupId!,
+          id,
+        );
+      } else if (student.freeTime != null && student.freeTime!.isNotEmpty) {
         final matchingGroup = _groups.firstWhere(
           (g) => g.time.contains(student.freeTime!),
-          orElse: () =>
-              Group(id: -1, name: '', schedule: '', time: '', price: 0.0),
+          orElse:
+              () =>
+                  Group(id: -1, name: '', schedule: '', time: '', price: 0.0),
         );
 
         if (matchingGroup.id != -1) {
+          studentWithId = studentWithId.copyWith(groupId: matchingGroup.id);
           await assignStudentToGroup(id, matchingGroup.id!);
         }
       }
 
-      await fetchStudents(); // Ro'yxatni yangilash
+      await _paymentService.createInitialChargeForStudent(studentWithId);
+
+      await fetchStudents();
 
       // Telegram xabarnoma yuborish (agar sozlamalar mavjud bo'lsa)
       if (botToken != null && adminChatId != null) {
@@ -354,7 +434,12 @@ class StudentProvider extends ChangeNotifier {
     }
 
     await DatabaseHelper.instance.addStudentToGroup(groupId, studentId);
-    // Ma'lumotlarni qayta yuklash (ayniqsa filtrlar o'zgargan bo'lsa)
+    final student = await DatabaseHelper.instance.getStudentById(studentId);
+    if (student != null) {
+      await DatabaseHelper.instance.updateStudent(
+        student.copyWith(groupId: groupId),
+      );
+    }
     await fetchStudents();
     return true;
   }
@@ -471,10 +556,16 @@ class StudentProvider extends ChangeNotifier {
     }
   }
 
-  /// To'lov qo'shish
+  /// To'lov qo'shish (qarz + depozit mantiq bilan)
   Future<void> addPayment(Payment payment) async {
-    await DatabaseHelper.instance.createPayment(payment);
+    await _paymentService.processPayment(
+      studentId: payment.studentId,
+      amount: payment.amount,
+      method: PaymentMethod.fromString(payment.type),
+      note: payment.note,
+    );
     await fetchPaymentStudents();
+    await fetchMonthlyFinance();
     notifyListeners();
   }
 
@@ -491,6 +582,9 @@ class StudentProvider extends ChangeNotifier {
     await fetchMonthlyFinance(); // Dashboard dagi summalarni yangilash
     notifyListeners();
   }
+
+  Future<StudentFinanceEntity?> getStudentFinance(int studentId) =>
+      _paymentService.getStudentFinance(studentId);
 
   /// O'quvchining to'lovlar tarixini olish
   Future<List<Payment>> getStudentPayments(int studentId) async {

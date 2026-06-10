@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:school_app/features/students/data/models/student_model.dart';
 import 'package:school_app/core/services/secure_storage_service.dart';
+import 'package:school_app/features/payments/domain/enums/payment_method.dart';
+import 'package:school_app/features/payments/domain/enums/payment_type.dart';
 import 'package:school_app/core/providers/student_provider.dart';
 
 class AddStudentScreen extends StatefulWidget {
@@ -25,6 +27,10 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
   final _freeTimeController = TextEditingController();
   final _customPriceController = TextEditingController();
 
+  PaymentType _paymentType = PaymentType.monthly;
+  PaymentMethod _paymentMethod = PaymentMethod.cash;
+  int? _selectedGroupId;
+  DateTime _joinDate = DateTime.now();
   bool _isSaving = false;
 
   @override
@@ -46,6 +52,12 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
       _customPriceController.text = widget.student!.customPrice != null
           ? widget.student!.customPrice!.toStringAsFixed(0)
           : '';
+      _paymentType = widget.student!.paymentType;
+      _paymentMethod = widget.student!.paymentMethod;
+      _selectedGroupId = widget.student!.groupId;
+      if (widget.student!.joinDate != null) {
+        _joinDate = DateTime.parse(widget.student!.joinDate!);
+      }
     }
   }
 
@@ -86,6 +98,10 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
         parentTelegram: _parentTelegramController.text.trim(),
         freeTime: _freeTimeController.text.trim(),
         customPrice: double.tryParse(_customPriceController.text.trim()),
+        joinDate: _joinDate.toIso8601String().substring(0, 10),
+        groupId: _selectedGroupId,
+        paymentType: _paymentType,
+        paymentMethod: _paymentMethod,
       );
 
       if (widget.student == null) {
@@ -240,17 +256,103 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
               const SizedBox(height: 16),
               TextFormField(
                 controller: _customPriceController,
-                textInputAction: TextInputAction.done,
-                onFieldSubmitted: (_) => _saveStudent(),
+                textInputAction: TextInputAction.next,
                 decoration: const InputDecoration(
-                  labelText: 'Individual to\'lov summasi (Ixtiyoriy)',
+                  labelText: 'Individual oylik summa (Ixtiyoriy)',
                   prefixIcon: Icon(Icons.monetization_on_outlined),
-                  hintText: 'Kiritilsa, guruh narxlari ignor qilinadi',
+                  hintText: 'Bo\'sh qoldirilsa, guruh narxi ishlatiladi',
                 ),
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 keyboardType: TextInputType.number,
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 16),
+              Consumer<StudentProvider>(
+                builder: (context, provider, _) {
+                  return DropdownButtonFormField<int?>(
+                    value: _selectedGroupId,
+                    decoration: const InputDecoration(
+                      labelText: 'Guruh',
+                      prefixIcon: Icon(Icons.group),
+                    ),
+                    items: [
+                      const DropdownMenuItem(
+                        value: null,
+                        child: Text('Guruh tanlanmagan'),
+                      ),
+                      ...provider.groups.map(
+                        (g) => DropdownMenuItem(
+                          value: g.id,
+                          child: Text(
+                            '${g.name} (${g.monthlyFee.toStringAsFixed(0)} so\'m)',
+                          ),
+                        ),
+                      ),
+                    ],
+                    onChanged: (val) => setState(() => _selectedGroupId = val),
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<PaymentType>(
+                value: _paymentType,
+                decoration: const InputDecoration(
+                  labelText: 'To\'lov turi',
+                  prefixIcon: Icon(Icons.calendar_month),
+                ),
+                items:
+                    PaymentType.values
+                        .map(
+                          (t) => DropdownMenuItem(
+                            value: t,
+                            child: Text(t.label),
+                          ),
+                        )
+                        .toList(),
+                onChanged:
+                    (val) => setState(() => _paymentType = val ?? _paymentType),
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<PaymentMethod>(
+                value: _paymentMethod,
+                decoration: const InputDecoration(
+                  labelText: 'To\'lov usuli',
+                  prefixIcon: Icon(Icons.payment),
+                ),
+                items:
+                    PaymentMethod.values
+                        .map(
+                          (m) => DropdownMenuItem(
+                            value: m,
+                            child: Text(m.label),
+                          ),
+                        )
+                        .toList(),
+                onChanged:
+                    (val) =>
+                        setState(() => _paymentMethod = val ?? _paymentMethod),
+              ),
+              const SizedBox(height: 16),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.event),
+                title: const Text('Qo\'shilgan sana'),
+                subtitle: Text(_joinDate.toString().substring(0, 10)),
+                trailing: IconButton(
+                  icon: const Icon(Icons.edit_calendar),
+                  onPressed: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: _joinDate,
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime.now(),
+                    );
+                    if (picked != null) {
+                      setState(() => _joinDate = picked);
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(height: 16),
               ElevatedButton(
                 onPressed: _isSaving ? null : _saveStudent,
                 style: ElevatedButton.styleFrom(

@@ -47,6 +47,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 16),
               _buildFinanceCard(provider),
               const SizedBox(height: 16),
+              _buildStatsGrid(provider),
+              const SizedBox(height: 16),
               _buildStudentFlowChart(provider),
               const SizedBox(height: 16),
               const AttendanceStatsWidget(),
@@ -61,6 +63,63 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildStatsGrid(StudentProvider provider) {
+    final stats = provider.dashboardStats;
+    if (stats == null) return const SizedBox.shrink();
+
+    final items = [
+      ('O\'quvchilar', '${stats.totalStudents}', Icons.people),
+      ('To\'laganlar', '${stats.paidStudents}', Icons.check_circle),
+      ('Qarzdorlar', '${stats.debtorStudents}', Icons.warning),
+      ('Kutilayotgan', '${stats.expectedRevenue.toStringAsFixed(0)}', Icons.schedule),
+      ('Depozitlar', '${stats.totalDeposits.toStringAsFixed(0)}', Icons.savings),
+    ];
+
+    return GridView.count(
+      crossAxisCount: 2,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      crossAxisSpacing: 10,
+      mainAxisSpacing: 10,
+      childAspectRatio: 2.2,
+      children:
+          items.map((item) {
+            return Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(item.$3, size: 18),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            item.$1,
+                            style: const TextStyle(fontSize: 12),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      item.$2,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }).toList(),
     );
   }
 

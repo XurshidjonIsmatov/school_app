@@ -1,9 +1,9 @@
 class Group {
   final int? id;
   final String name;
-  final String schedule; // Masalan: "Dush-Sesh-Chor"
+  final String schedule;
   final String time;
-  final double price; // Yangi maydon
+  final double price;
   final int studentCount;
   final int maxStudents;
 
@@ -16,6 +16,8 @@ class Group {
     this.maxStudents = 20,
     this.studentCount = 0,
   });
+
+  double get monthlyFee => price;
 
   Map<String, dynamic> toMap() {
     return {
